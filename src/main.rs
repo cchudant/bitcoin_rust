@@ -1,93 +1,61 @@
-extern crate secp256k1;
+extern crate hex;
 #[macro_use]
 extern crate hex_literal;
-extern crate hex;
-extern crate generic_array;
-extern crate digest;
-extern crate sha2;
-extern crate ripemd160;
-extern crate base58;
 
-/*use signatory::{curve::secp256k1::SecretKey, PublicKeyed};*/
-use secp256k1::{
-    Secp256k1,
-    key::SecretKey,
-    key::PublicKey
-};
 use hex::ToHex;
-use generic_array::{
-    GenericArray,
-    sequence::Split, 
-    typenum::U4
-};
-use digest::Digest;
-use sha2::Sha256;
-use ripemd160::Ripemd160;
-use base58::ToBase58;
+
+extern crate rustcoin;
+use rustcoin::{SecretKey, PublicKey, Address, ToBase58Check};
 
 fn main()
 {
-    let engine = Secp256k1::new();
-
     // Secret Key
 
-    let secret_key = SecretKey::from_slice(&engine, &hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
-    let s_secret_key = secret_key[..].as_ref();
+    let secret_key = SecretKey::from_slice(&hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
+    let s_bytes = secret_key.bytes_uncompressed();
+    let sc_bytes = secret_key.bytes_compressed();
 
     let mut s = String::new();
-    s_secret_key.write_hex(&mut s).unwrap();
+    s_bytes.write_hex(&mut s).unwrap();
     println!("Secret key:\t{}", s);
 
-    println!("WIF Secret:\t{}", base58_check(0x80, s_secret_key));
-
-    let mut cs_secret_key = Vec::from(s_secret_key);
-    cs_secret_key.push(0x01);
+    println!("WIF Secret:\t{}", s_bytes.to_base58_check(0x80));
 
     let mut s = String::new();
-    cs_secret_key.write_hex(&mut s).unwrap();
-    println!("CSecret key:\t{}", s);
+    sc_bytes.write_hex(&mut s).unwrap();
+    println!("cSecret key:\t{}", s);
 
-    println!("WIF-c Secret:\t{}", base58_check(0x80, &cs_secret_key));
+    println!("cWIF Secret:\t{}", sc_bytes.to_base58_check(0x80));
 
     // Public Key
 
-    let public_key = PublicKey::from_secret_key(&engine, &secret_key).unwrap();
-    let s_public_key = public_key.serialize_vec(&engine, false);
-    let sc_public_key = public_key.serialize_vec(&engine, true);
+    let public_key = PublicKey::from_secret_key(&secret_key).unwrap();
+    let p_bytes = public_key.bytes_uncompressed();
+    let pc_bytes = public_key.bytes_compressed();
 
     let mut s = String::new();
-    s_public_key.write_hex(&mut s).unwrap();
+    p_bytes.write_hex(&mut s).unwrap();
     println!("Public key:\t{}", s);
 
     let mut s = String::new();
-    sc_public_key.write_hex(&mut s).unwrap();
-    println!("CPublic key:\t{}", s);
+    pc_bytes.write_hex(&mut s).unwrap();
+    println!("cPublic key:\t{}", s);
 
-    // Payload
+    // Address
 
-    println!("Bitcoin addr:\t{}", base58_check(0, &address(&s_public_key)));
-    println!("CBitcoin addr:\t{}", base58_check(0, &address(&sc_public_key)));
-}
+    let address = Address::from_public_key(&public_key, false);
+    let caddress = Address::from_public_key(&public_key, true);
 
-fn address(public_key: &[u8]) -> Vec<u8>
-{
-    //HASH160
-    Vec::from(Ripemd160::digest(&Sha256::digest(public_key)).as_slice())
-}
+    println!("Address:\t{}", address.to_base58_check(0x00));
+    println!("cAddress:\t{}", caddress.to_base58_check(0x00));
 
-fn base58_check(prefix: u8, payload: &[u8]) -> String
-{
-    //Add version prefix
-    let mut result = vec![prefix];
-    result.extend(payload);
+/*
+    let licorne = "cake apple borrow silk endorse fitness top denial coil riot stay wolf luggage oxygen faint major edit measure invite love trap field dilemma oblige";
+    let mut slice = vec![0; <Sha512 as FixedOutput>::OutputSize::to_usize()];
 
-    //checksum = Sha256(Sha256(prefix+digest))
-    let checksum_digest = Sha256::digest(&Sha256::digest(&result));
+    pbkdf2::<Hmac<Sha512>>(licorne.as_bytes(), "mnemonic".as_bytes(), 2048, &mut slice);
 
-    //use only first 4 bytes
-    let (checksum, _): (GenericArray<u8, U4>, _) = checksum_digest.split();
-
-    //concat & base58
-    result.extend(checksum);
-    result.to_base58()
+    let mut s = String::new();
+    slice.write_hex(&mut s).unwrap();
+    println!("Seed:\t{}", s);*/
 }
