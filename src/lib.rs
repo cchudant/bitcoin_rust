@@ -10,13 +10,13 @@ extern crate rand;
 extern crate pbkdf2;
 extern crate hmac;
 
-use digest::{Digest, FixedOutput};
+use digest::Digest;
 use sha2::{Sha256, Sha512};
 use ripemd160::Ripemd160;
 use generic_array::{
     GenericArray,
     sequence::Split, 
-    typenum::{U4, Unsigned}
+    typenum::U4
 };
 use base58::ToBase58;
 use rand::{thread_rng, Rng};
@@ -222,9 +222,7 @@ pub fn generate_mnemonic<S: MnemonicSize>(dictionary: &[String]) -> String
 pub const SEED_SIZE: usize = 64;
 pub fn mnemonic_to_seed(mnemonic: &str, passphrase: &str) -> Vec<u8>
 {
-    println!("{}", <Sha512 as FixedOutput>::OutputSize::to_usize());
     let mut slice = vec![0; SEED_SIZE];
-
     pbkdf2::<Hmac<Sha512>>(mnemonic.as_bytes(), ("mnemonic".to_owned() + passphrase).as_bytes(), 2048, &mut slice);
     slice
 }
