@@ -1,7 +1,5 @@
 extern crate secp256k1;
 #[macro_use]
-extern crate hex_literal;
-#[macro_use]
 extern crate lazy_static;
 extern crate generic_array;
 extern crate digest;
@@ -9,6 +7,8 @@ extern crate sha2;
 extern crate ripemd160;
 extern crate base58;
 extern crate rand;
+extern crate pbkdf2;
+extern crate hmac;
 
 use digest::{Digest, FixedOutput};
 use sha2::{Sha256, Sha512};
@@ -20,6 +20,8 @@ use generic_array::{
 };
 use base58::ToBase58;
 use rand::{thread_rng, Rng};
+use pbkdf2::pbkdf2;
+use hmac::Hmac;
 
 lazy_static! {
     static ref SECP256K1_ENGINE: secp256k1::Secp256k1 = secp256k1::Secp256k1::new();
@@ -217,6 +219,20 @@ pub fn generate_mnemonic<S: MnemonicSize>(dictionary: &[String]) -> String
         .join(" ")
 }
 
+pub const SEED_SIZE: usize = 64;
+pub fn mnemonic_to_seed(mnemonic: &str, passphrase: &str) -> Vec<u8>
+{
+    println!("{}", <Sha512 as FixedOutput>::OutputSize::to_usize());
+    let mut slice = vec![0; SEED_SIZE];
+
+    pbkdf2::<Hmac<Sha512>>(mnemonic.as_bytes(), ("mnemonic".to_owned() + passphrase).as_bytes(), 2048, &mut slice);
+    slice
+}
+
+#[cfg(test)]
+#[macro_use]
+extern crate hex_literal;
+
 #[cfg(test)]
 mod tests
 {
@@ -286,5 +302,13 @@ mod tests
         let public_key = PublicKey::from_secret_key(&secret_key).unwrap();
         let address = Address::from_public_key(&public_key, true);
         assert_eq!(address.to_base58_check(0x00), "14cxpo3MBCYYWCgF74SWTdcmxipnGUsPw3");
+    }
+
+    #[test]
+    fn mnemonic_seed()
+    {
+        let mnemonic = "army van defense carry jealous true garbage claim echo media make crunch";
+        let test: &[u8] = &hex!("5b56c417303faa3fcba7e57400e120a0ca83ec5a4fc9ffba757fbe63fbd77a89a1a3be4c67196f57c39a88b76373733891bfaba16ed27a813ceed498804c0570");
+        assert_eq!(mnemonic_to_seed(mnemonic, ""), test);
     }
 }
