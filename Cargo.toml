@@ -9,6 +9,7 @@ keywords = ["bitcoin"]
 categories = ["cryptography"]
 
 [dependencies]
+rand = "0.5"
 lazy_static = "1.1.0"
 arrayvec = "0.4.7"
 hex-literal = "0.1.1"
