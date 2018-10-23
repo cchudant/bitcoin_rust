@@ -10,6 +10,7 @@ extern crate rand;
 extern crate pbkdf2;
 extern crate hmac;
 
+use std::marker::PhantomData;
 use digest::Digest;
 use sha2::{Sha256, Sha512};
 use ripemd160::Ripemd160;
@@ -135,9 +136,6 @@ impl<T: AsRef<[u8]>> ToBase58Check for T
 
 pub trait MnemonicSize
 {
-    fn entropy_array() -> Vec<u8>; 
-    fn segments_array() -> Vec<u16>; 
-
     fn entropy_bytes() -> usize;
     fn entropy_bits() -> usize;
     fn checksum_bits() -> usize;
@@ -152,8 +150,6 @@ macro_rules! gen_mnemonic_size {
         pub struct $name;
         impl MnemonicSize for $name
         {
-            fn entropy_array() -> Vec<u8> { vec![0; $bits / 8 + 1] }
-            fn segments_array() -> Vec<u16> { vec![0; ($bits + $checksum) / 11] }
             fn entropy_bytes() -> usize { $bits/8 }
             fn entropy_bits() -> usize { $bits }
             fn checksum_bits() -> usize { $checksum }
@@ -177,64 +173,103 @@ gen_mnemonic_size!(MnemonicSize18w, 192, 6);
 gen_mnemonic_size!(MnemonicSize21w, 224, 7);
 gen_mnemonic_size!(MnemonicSize24w, 256, 8);
 
-pub fn generate_mnemonic<S: MnemonicSize>(dictionary: &[String]) -> String
+pub struct Mnemonic<S: MnemonicSize>(Vec<u8>, PhantomData<S>);
+
+impl<S: MnemonicSize> Mnemonic<S>
 {
-    //generate entropy
-    let mut rng = thread_rng();
-    let mut array = S::entropy_array(); 
-    rng.fill(&mut array[..S::entropy_bytes()]);
-
-    //add checksum
-    let checksum = Sha256::digest(&array[..S::entropy_bytes()]);
-    array[S::entropy_bytes()] = checksum[0] & S::checksum_mask();
-
-    //split into 11bits segments
-    let mut segments = S::segments_array();
-    let mut r = 8;
-    let mut j = 0;
-    for i in 0..S::words() {
-        let al = 11 - r;
-        let be = 8 - al;
-        if be < 0 {
-            let de = 8 + be;
-            segments[i] = ((array[j] as u16) << al
-                | (array[j + 1] as u16) << -be
-                | (array[j + 2] >> de) as u16) & 0b11111111111;
-            j += 2;
-            r = de;
-        }
-        else {
-            segments[i] = ((array[j] as u16) << al
-                | (array[j + 1] >> be) as u16) & 0b11111111111;
-            j += 1;
-            r = be;
-        }
+    pub fn generate() -> Mnemonic<S>
+    {
+        let mut rng = thread_rng();
+        let mut entropy = vec![0; S::entropy_bytes()]; 
+        rng.fill(&mut entropy[..]);
+        Mnemonic(entropy, PhantomData)
     }
 
-    //map with dictionnary
-    segments[..].iter()
-        .map(|el| &dictionary[*el as usize])
-        .map(|el| el.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
+    pub fn from_entropy(entropy: Vec<u8>) -> Mnemonic<S>
+    {
+        debug_assert_eq!(entropy.len(), S::entropy_bytes());
+        Mnemonic(entropy, PhantomData)
+    }
+
+    pub fn words(self, dictionary: &[String]) -> String
+    {
+        let mut array = Vec::with_capacity(S::total_bytes());
+        array.extend(self.0);
+        array.push(0);
+
+        //add checksum
+        let checksum = Sha256::digest(&array[..S::entropy_bytes()]);
+        array[S::entropy_bytes()] = checksum[0] & S::checksum_mask();
+
+        //split into 11bits segments
+        let mut segments = Vec::with_capacity(S::words());
+        let mut r = 8;
+        let mut j = 0;
+        for _ in 0..S::words() {
+            let al = 11 - r;
+            let be = 8 - al;
+            if be < 0 {
+                let de = 8 + be;
+                segments.push(
+                    ((array[j] as u16) << al
+                        | (array[j + 1] as u16) << -be
+                        | (array[j + 2] >> de) as u16) & 0b11111111111
+                );
+                j += 2;
+                r = de;
+            }
+            else {
+                segments.push(
+                    ((array[j] as u16) << al
+                        | (array[j + 1] >> be) as u16) & 0b11111111111
+                );
+                j += 1;
+                r = be;
+            }
+        }
+
+        //map with dictionnary
+        segments[..].iter()
+            .map(|el| &dictionary[*el as usize])
+            .map(|el| el.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
-pub const SEED_SIZE: usize = 64;
-pub fn mnemonic_to_seed(mnemonic: &str, passphrase: &str) -> Vec<u8>
+pub struct Seed(Vec<u8>);
+
+impl Seed
 {
-    let mut slice = vec![0; SEED_SIZE];
-    pbkdf2::<Hmac<Sha512>>(mnemonic.as_bytes(), ("mnemonic".to_owned() + passphrase).as_bytes(), 2048, &mut slice);
-    slice
+    pub const SIZE: usize = 512 / 8; //512 bits
+
+    pub fn from_words(words: &str, passphrase: &str) -> Seed
+    {
+        let mut vec = vec![0; Seed::SIZE];
+        pbkdf2::<Hmac<Sha512>>(words.as_bytes(), ("mnemonic".to_owned() + passphrase).as_bytes(), 2048, &mut vec);
+        Seed(vec)
+    }
+}
+
+impl AsRef<[u8]> for Seed
+{
+    fn as_ref(&self) -> &[u8]
+    {
+        &self.0
+    }
 }
 
 #[cfg(test)]
 #[macro_use]
 extern crate hex_literal;
 
+
 #[cfg(test)]
 mod tests
 {
     use super::*;
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
 
     #[test]
     fn uncompressed_secret_key()
@@ -303,10 +338,26 @@ mod tests
     }
 
     #[test]
+    fn mnemonic_from_entropy()
+    {
+        let f = File::open("english.txt").expect("file not found");
+        let reader = BufReader::new(f);
+
+        let lines = reader.lines()
+            .map(|el| el.unwrap())
+            .collect::<Vec<_>>();
+
+        let entropy: &[u8] = &hex!("0c1e24e5917779d297e14d45f14e1a1a");
+        let mnemonic = Mnemonic::<MnemonicSize12w>::from_entropy(Vec::from(entropy));
+        let test: &[u8] = &hex!("5b56c417303faa3fcba7e57400e120a0ca83ec5a4fc9ffba757fbe63fbd77a89a1a3be4c67196f57c39a88b76373733891bfaba16ed27a813ceed498804c0570");
+        assert_eq!(Seed::from_words(mnemonic.words(&lines).as_str(), "").as_ref(), test);
+    }
+
+    #[test]
     fn mnemonic_seed()
     {
-        let mnemonic = "army van defense carry jealous true garbage claim echo media make crunch";
+        let words = "army van defense carry jealous true garbage claim echo media make crunch";
         let test: &[u8] = &hex!("5b56c417303faa3fcba7e57400e120a0ca83ec5a4fc9ffba757fbe63fbd77a89a1a3be4c67196f57c39a88b76373733891bfaba16ed27a813ceed498804c0570");
-        assert_eq!(mnemonic_to_seed(mnemonic, ""), test);
+        assert_eq!(Seed::from_words(words, "").as_ref(), test);
     }
 }
