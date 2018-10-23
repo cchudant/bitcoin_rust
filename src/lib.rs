@@ -8,6 +8,7 @@ extern crate digest;
 extern crate sha2;
 extern crate ripemd160;
 extern crate base58;
+extern crate rand;
 
 use digest::{Digest, FixedOutput};
 use sha2::{Sha256, Sha512};
@@ -18,6 +19,7 @@ use generic_array::{
     typenum::{U4, Unsigned}
 };
 use base58::ToBase58;
+use rand::{thread_rng, Rng};
 
 lazy_static! {
     static ref SECP256K1_ENGINE: secp256k1::Secp256k1 = secp256k1::Secp256k1::new();
@@ -127,6 +129,92 @@ impl<T: AsRef<[u8]>> ToBase58Check for T
         result.extend(checksum);
         result.to_base58()
     }
+}
+
+pub trait MnemonicSize
+{
+    fn entropy_array() -> Vec<u8>; 
+    fn segments_array() -> Vec<u16>; 
+
+    fn entropy_bytes() -> usize;
+    fn entropy_bits() -> usize;
+    fn checksum_bits() -> usize;
+    fn checksum_mask() -> u8;
+    fn total_bits() -> usize;
+    fn total_bytes() -> usize;
+    fn words() -> usize;
+}
+
+macro_rules! gen_mnemonic_size {
+    ($name:ident, $bits:expr, $checksum:expr) => {
+        pub struct $name;
+        impl MnemonicSize for $name
+        {
+            fn entropy_array() -> Vec<u8> { vec![0; $bits / 8 + 1] }
+            fn segments_array() -> Vec<u16> { vec![0; ($bits + $checksum) / 11] }
+            fn entropy_bytes() -> usize { $bits/8 }
+            fn entropy_bits() -> usize { $bits }
+            fn checksum_bits() -> usize { $checksum }
+            fn checksum_mask() -> u8 { (((1 << $checksum as u16) - 1) as u8) << 8 - $checksum }
+            fn total_bits() -> usize { $bits + $checksum }
+            fn total_bytes() -> usize { $bits / 8 + 1 }
+            fn words() -> usize { ($bits + $checksum) / 11 }
+        }
+    };
+}
+
+//entropy + checksum = total = 11 * words
+//128 + 4 = 132 bits = 11 * 12 words
+//160 + 5 = 165 bits = 11 * 15 words
+//192 + 6 = 198 bits = 11 * 18 words
+//224 + 7 = 231 bits = 11 * 21 words
+//256 + 8 = 256 bits = 11 * 24 words
+gen_mnemonic_size!(MnemonicSize12w, 128, 4);
+gen_mnemonic_size!(MnemonicSize15w, 160, 5);
+gen_mnemonic_size!(MnemonicSize18w, 192, 6);
+gen_mnemonic_size!(MnemonicSize21w, 224, 7);
+gen_mnemonic_size!(MnemonicSize24w, 256, 8);
+
+pub fn generate_mnemonic<S: MnemonicSize>(dictionary: &[String]) -> String
+{
+    //generate entropy
+    let mut rng = thread_rng();
+    let mut array = S::entropy_array(); 
+    rng.fill(&mut array[..S::entropy_bytes()]);
+
+    //add checksum
+    let checksum = Sha256::digest(&array[..S::entropy_bytes()]);
+    array[S::entropy_bytes()] = checksum[0] & S::checksum_mask();
+
+    //split into 11bits segments
+    let mut segments = S::segments_array();
+    let mut r = 8;
+    let mut j = 0;
+    for i in 0..S::words() {
+        let al = 11 - r;
+        let be = 8 - al;
+        if be < 0 {
+            let de = 8 + be;
+            segments[i] = ((array[j] as u16) << al
+                | (array[j + 1] as u16) << -be
+                | (array[j + 2] >> de) as u16) & 0b11111111111;
+            j += 2;
+            r = de;
+        }
+        else {
+            segments[i] = ((array[j] as u16) << al
+                | (array[j + 1] >> be) as u16) & 0b11111111111;
+            j += 1;
+            r = be;
+        }
+    }
+
+    //map with dictionnary
+    segments[..].iter()
+        .map(|el| &dictionary[*el as usize])
+        .map(|el| el.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
