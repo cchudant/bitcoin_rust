@@ -9,6 +9,9 @@ extern crate base58;
 extern crate rand;
 extern crate pbkdf2;
 extern crate hmac;
+#[macro_use]
+extern crate hex_literal;
+extern crate byteorder;
 
 use std::marker::PhantomData;
 use digest::Digest;
@@ -23,6 +26,7 @@ use base58::ToBase58;
 use rand::{thread_rng, Rng};
 use pbkdf2::pbkdf2;
 use hmac::Hmac;
+use byteorder::{BigEndian, ByteOrder};
 
 lazy_static! {
     static ref SECP256K1_ENGINE: secp256k1::Secp256k1 = secp256k1::Secp256k1::new();
@@ -111,15 +115,16 @@ impl AsRef<[u8]> for Address
 
 pub trait ToBase58Check
 {
-    fn to_base58_check(&self, prefix: u8) -> String;
+    fn to_base58_check(&self, prefix: &[u8]) -> String;
 }
 
 impl<T: AsRef<[u8]>> ToBase58Check for T
 {
-    fn to_base58_check(&self, prefix: u8) -> String
+    fn to_base58_check(&self, prefix: &[u8]) -> String
     {
         //Add version prefix
-        let mut result = vec![prefix];
+        let mut result = Vec::with_capacity(self.as_ref().len() + prefix.len() + 4);
+        result.extend(prefix);
         result.extend(self.as_ref());
 
         //checksum = Sha256(Sha256(prefix+digest))
@@ -146,17 +151,17 @@ pub trait MnemonicSize
 }
 
 macro_rules! gen_mnemonic_size {
-    ($name:ident, $bits:expr, $checksum:expr) => {
+    ($name:ident, $bits:expr) => {
         pub struct $name;
         impl MnemonicSize for $name
         {
-            fn entropy_bytes() -> usize { $bits/8 }
+            fn entropy_bytes() -> usize { $bits / 8 }
             fn entropy_bits() -> usize { $bits }
-            fn checksum_bits() -> usize { $checksum }
-            fn checksum_mask() -> u8 { (((1 << $checksum as u16) - 1) as u8) << 8 - $checksum }
-            fn total_bits() -> usize { $bits + $checksum }
+            fn checksum_bits() -> usize { $bits / 32 }
+            fn checksum_mask() -> u8 { (((1 << $bits / 32 as u16) - 1) as u8) << 8 - $bits / 32 }
+            fn total_bits() -> usize { $bits + $bits / 32 }
             fn total_bytes() -> usize { $bits / 8 + 1 }
-            fn words() -> usize { ($bits + $checksum) / 11 }
+            fn words() -> usize { ($bits + $bits / 32) / 11 }
         }
     };
 }
@@ -167,11 +172,11 @@ macro_rules! gen_mnemonic_size {
 //192 + 6 = 198 bits = 11 * 18 words
 //224 + 7 = 231 bits = 11 * 21 words
 //256 + 8 = 256 bits = 11 * 24 words
-gen_mnemonic_size!(MnemonicSize12w, 128, 4);
-gen_mnemonic_size!(MnemonicSize15w, 160, 5);
-gen_mnemonic_size!(MnemonicSize18w, 192, 6);
-gen_mnemonic_size!(MnemonicSize21w, 224, 7);
-gen_mnemonic_size!(MnemonicSize24w, 256, 8);
+gen_mnemonic_size!(MnemonicSize12w, 128);
+gen_mnemonic_size!(MnemonicSize15w, 160);
+gen_mnemonic_size!(MnemonicSize18w, 192);
+gen_mnemonic_size!(MnemonicSize21w, 224);
+gen_mnemonic_size!(MnemonicSize24w, 256);
 
 pub struct Mnemonic<S: MnemonicSize>(Vec<u8>, PhantomData<S>);
 
@@ -259,10 +264,89 @@ impl AsRef<[u8]> for Seed
     }
 }
 
-#[cfg(test)]
-#[macro_use]
-extern crate hex_literal;
+#[derive(Debug)]
+pub struct ExtendedKey<'a>
+{
+    pub key_type: KeyType,
+    pub net: Net,
+    pub depth: u8,
+    pub parent_fingerprint: u32,
+    pub child_number: u32,
+    pub chain_code: &'a [u8],
+    pub key: &'a [u8],
+}
 
+#[derive(Debug)]
+#[derive(PartialEq)]
+#[derive(Copy)]
+#[derive(Clone)]
+pub enum KeyType
+{
+    Public,
+    Private
+}
+
+#[derive(Debug)]
+#[derive(PartialEq)]
+#[derive(Copy)]
+#[derive(Clone)]
+pub enum Net
+{
+    MainNet,
+    TestNet
+}
+
+#[derive(Debug)]
+pub struct KeyParseError;
+
+impl<'a> ExtendedKey<'a>
+{
+    pub fn parse(xkey: &'a [u8]) -> std::result::Result<ExtendedKey<'a>, KeyParseError>
+    {
+        if xkey.len() != 78 { return Err(KeyParseError) }
+
+        let (key_type, net) = match xkey[..4] {
+            ref b if b == hex!("0488b21e") => (KeyType::Public, Net::MainNet),
+            ref b if b == hex!("0488ade4") => (KeyType::Private, Net::MainNet),
+            ref b if b == hex!("043587cf") => (KeyType::Public, Net::TestNet),
+            ref b if b == hex!("04358394") => (KeyType::Private, Net::TestNet),
+            _ => return Err(KeyParseError)
+        };
+        let depth = xkey[4];
+        let parent_fingerprint = BigEndian::read_u32(&xkey[5..9]);
+        let child_number = BigEndian::read_u32(&xkey[9..13]);
+        let chain_code = &xkey[13..45];
+        let key = &xkey[45..78];
+
+        Ok(ExtendedKey { key_type, net, depth, parent_fingerprint, child_number, chain_code, key })
+    }
+
+    pub fn serialize(&self) -> String
+    {
+        let mut ser = Vec::with_capacity(78);
+        let prefix = match (self.key_type, self.net) {
+            (KeyType::Public, Net::MainNet) => hex!("0488b21e"),
+            (KeyType::Private, Net::MainNet) => hex!("0488ade4"),
+            (KeyType::Public, Net::TestNet) => hex!("043587cf"),
+            (KeyType::Private, Net::TestNet) => hex!("04358394")
+        };
+        ser.extend(&prefix);
+        ser.push(self.depth);
+        ser.extend(&[0; 4]);
+        BigEndian::write_u32(&mut ser[5..9], self.parent_fingerprint);
+        ser.extend(&[0; 4]);
+        BigEndian::write_u32(&mut ser[9..13], self.child_number);
+        ser.extend(self.chain_code);
+        ser.extend(self.key);
+
+        ser.to_base58_check(&[])
+    }
+}
+
+
+
+#[cfg(test)]
+use base58::FromBase58;
 
 #[cfg(test)]
 mod tests
@@ -291,14 +375,14 @@ mod tests
     fn wif_uncompressed_secret_key()
     {
         let secret_key = SecretKey::from_slice(&hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
-        assert_eq!(secret_key.bytes_uncompressed().to_base58_check(0x80), "5JG9hT3beGTJuUAmCQEmNaxAuMacCTfXuw1R3FCXig23RQHMr4K");
+        assert_eq!(secret_key.bytes_uncompressed().to_base58_check(&[0x80]), "5JG9hT3beGTJuUAmCQEmNaxAuMacCTfXuw1R3FCXig23RQHMr4K");
     }
 
     #[test]
     fn wif_compressed_secret_key()
     {
         let secret_key = SecretKey::from_slice(&hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
-        assert_eq!(secret_key.bytes_compressed().to_base58_check(0x80), "KyBsPXxTuVD82av65KZkrGrWi5qLMah5SdNq6uftawDbgKa2wv6S");
+        assert_eq!(secret_key.bytes_compressed().to_base58_check(&[0x80]), "KyBsPXxTuVD82av65KZkrGrWi5qLMah5SdNq6uftawDbgKa2wv6S");
     }
 
     #[test]
@@ -325,7 +409,7 @@ mod tests
         let secret_key = SecretKey::from_slice(&hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
         let public_key = PublicKey::from_secret_key(&secret_key).unwrap();
         let address = Address::from_public_key(&public_key, false);
-        assert_eq!(address.to_base58_check(0x00), "1thMirt546nngXqyPEz532S8fLwbozud8");
+        assert_eq!(address.to_base58_check(&[0x00]), "1thMirt546nngXqyPEz532S8fLwbozud8");
     }
 
     #[test]
@@ -334,7 +418,7 @@ mod tests
         let secret_key = SecretKey::from_slice(&hex!("3aba4162c7251c891207b747840551a71939b0de081f85c4e44cf7c13e41daa6")).unwrap();
         let public_key = PublicKey::from_secret_key(&secret_key).unwrap();
         let address = Address::from_public_key(&public_key, true);
-        assert_eq!(address.to_base58_check(0x00), "14cxpo3MBCYYWCgF74SWTdcmxipnGUsPw3");
+        assert_eq!(address.to_base58_check(&[0x00]), "14cxpo3MBCYYWCgF74SWTdcmxipnGUsPw3");
     }
 
     #[test]
@@ -359,5 +443,67 @@ mod tests
         let words = "army van defense carry jealous true garbage claim echo media make crunch";
         let test: &[u8] = &hex!("5b56c417303faa3fcba7e57400e120a0ca83ec5a4fc9ffba757fbe63fbd77a89a1a3be4c67196f57c39a88b76373733891bfaba16ed27a813ceed498804c0570");
         assert_eq!(Seed::from_words(words, "").as_ref(), test);
+    }
+
+    #[test]
+    fn extended_key_parse1()
+    {
+        let a = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8".from_base58().unwrap();
+        let k = ExtendedKey::parse(&a[..78]).unwrap();
+        assert_eq!(k.key_type, KeyType::Public);
+        assert_eq!(k.net, Net::MainNet);
+        assert_eq!(k.depth, 0);
+        assert_eq!(k.parent_fingerprint, 0);
+        assert_eq!(k.child_number, 0);
+        let chain_code: &[u8] = &hex!("873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508");
+        assert_eq!(k.chain_code, chain_code);
+        let key: &[u8] = &hex!("0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2");
+        assert_eq!(k.key, key);
+    }
+
+    #[test]
+    fn extended_key_parse2()
+    {
+        let a = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi".from_base58().unwrap();
+        let k = ExtendedKey::parse(&a[..78]).unwrap();
+        assert_eq!(k.key_type, KeyType::Private);
+        assert_eq!(k.net, Net::MainNet);
+        assert_eq!(k.depth, 0);
+        assert_eq!(k.parent_fingerprint, 0);
+        assert_eq!(k.child_number, 0);
+        let chain_code: &[u8] = &hex!("873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508");
+        assert_eq!(k.chain_code, chain_code);
+        let key: &[u8] = &hex!("00e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35");
+        assert_eq!(k.key, key);
+    }
+
+    #[test]
+    fn extended_key_serialize1()
+    {
+        let k = ExtendedKey {
+            key_type: KeyType::Public,
+            net: Net::MainNet,
+            depth: 0,
+            parent_fingerprint: 0,
+            child_number: 0,
+            chain_code: &hex!("873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508"),
+            key: &hex!("0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2")
+        };
+        assert_eq!(k.serialize(), "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8");
+    }
+
+    #[test]
+    fn extended_key_serialize2()
+    {
+        let k = ExtendedKey {
+            key_type: KeyType::Private,
+            net: Net::MainNet,
+            depth: 0,
+            parent_fingerprint: 0,
+            child_number: 0,
+            chain_code: &hex!("873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508"),
+            key: &hex!("00e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35")
+        };
+        assert_eq!(k.serialize(), "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi");
     }
 }
