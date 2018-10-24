@@ -1,0 +1,111 @@
+extern crate secp256k1;
+#[macro_use]
+extern crate lazy_static;
+extern crate generic_array;
+extern crate digest;
+extern crate sha2;
+extern crate ripemd160;
+extern crate base58;
+extern crate rand;
+extern crate pbkdf2;
+extern crate hmac;
+#[macro_use]
+extern crate hex_literal;
+extern crate byteorder;
+
+use std::marker::PhantomData;
+use digest::Digest;
+use sha2::{Sha256, Sha512};
+use ripemd160::Ripemd160;
+use generic_array::{
+    GenericArray,
+    sequence::Split, 
+    typenum::U4
+};
+use base58::*;
+use rand::{thread_rng, Rng};
+use pbkdf2::pbkdf2;
+use hmac::{Hmac, Mac};
+use byteorder::{BigEndian, ByteOrder};
+
+extern crate hex;
+use hex::*;
+
+extern crate rustcoin;
+use rustcoin::*;
+
+fn main()
+{
+    println!("parent");
+
+    let k = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi".from_base58().unwrap();
+    let m = ExtendedKey::parse(&k[..78]).unwrap();
+
+    let mut s = String::new();
+    m.key.write_hex(&mut s);
+    println!("m_k\t{}", s);
+
+    let mut s = String::new();
+    m.chain_code.write_hex(&mut s);
+    println!("m_c\t{}", s);
+
+    println!("child");
+
+    let (key, chain_code) = child_derive(m.key, m.chain_code, 1 << 31);
+    let m_0h = ExtendedKey {
+        key: &key,
+        chain_code: &chain_code,
+        key_type: KeyType::Public,
+        net: Net::MainNet,
+        depth: 0,
+        parent_fingerprint: 0,
+        child_number: 1 << 31,
+    };
+
+    let mut s = String::new();
+    m_0h.key.write_hex(&mut s);
+    println!("m_0h_k\t{}", s);
+
+    let mut s = String::new();
+    m_0h.chain_code.write_hex(&mut s);
+    println!("m_0h_c\t{}", s);
+
+    println!("expected child");
+
+    let k = "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7".from_base58().unwrap();
+    let m_0h = ExtendedKey::parse(&k[..78]).unwrap();
+
+    let mut s = String::new();
+    m_0h.key.write_hex(&mut s);
+    println!("m_0h_k\t{}", s);
+
+    let mut s = String::new();
+    m.chain_code.write_hex(&mut s);
+    println!("m_0h_c\t{}", s);
+}
+
+fn child_derive(kpar: &[u8], cpar: &[u8], i: u32) -> (Vec<u8>, Vec<u8>)
+{
+    if i >= (1 << 31) { //hardened child
+        //HMAC-SHA512(Key = cpar, Data = 0x00 || ser256(kpar) || ser32(i))
+
+        let mut vec = Vec::with_capacity(33 + 4);
+        vec.extend(kpar);
+        vec.extend(&[0; 4]);
+        BigEndian::write_u32(&mut vec[33..33 + 4], i);
+
+        let mut s = String::new();
+        vec.write_hex(&mut s);
+        println!("sdsdqd\t{}", s);
+
+        let mut hmac = Hmac::<Sha512>::new_varkey(cpar).unwrap();
+        hmac.input(&vec);
+        let res = hmac.result();
+        let arr = res.code();
+        let slice = arr.as_slice();
+
+        (SecretKey::from_slice(&slice[..32]).unwrap().bytes_compressed(), Vec::from(&slice[32..]))
+    } else { 
+        Default::default()
+    }
+}

@@ -40,6 +40,7 @@ pub enum BitError
 
 pub type Result<T> = std::result::Result<T, BitError>;
 
+#[derive(Debug)]
 pub struct SecretKey(secp256k1::key::SecretKey);
 
 impl SecretKey {
@@ -68,6 +69,7 @@ impl SecretKey {
     }
 }
 
+#[derive(Debug)]
 pub struct PublicKey(secp256k1::key::PublicKey);
 
 impl PublicKey
@@ -94,6 +96,7 @@ impl PublicKey
     }
 }
 
+#[derive(Debug)]
 pub struct Address(Vec<u8>);
 
 impl Address
@@ -178,6 +181,7 @@ gen_mnemonic_size!(MnemonicSize18w, 192);
 gen_mnemonic_size!(MnemonicSize21w, 224);
 gen_mnemonic_size!(MnemonicSize24w, 256);
 
+#[derive(Debug)]
 pub struct Mnemonic<S: MnemonicSize>(Vec<u8>, PhantomData<S>);
 
 impl<S: MnemonicSize> Mnemonic<S>
@@ -242,6 +246,7 @@ impl<S: MnemonicSize> Mnemonic<S>
     }
 }
 
+#[derive(Debug)]
 pub struct Seed(Vec<u8>);
 
 impl Seed
@@ -265,6 +270,8 @@ impl AsRef<[u8]> for Seed
 }
 
 #[derive(Debug)]
+#[derive(PartialEq)]
+#[derive(Clone)]
 pub struct ExtendedKey<'a>
 {
     pub key_type: KeyType,
@@ -345,8 +352,6 @@ impl<'a> ExtendedKey<'a>
 
 
 
-#[cfg(test)]
-use base58::FromBase58;
 
 #[cfg(test)]
 mod tests
@@ -354,6 +359,7 @@ mod tests
     use super::*;
     use std::fs::File;
     use std::io::{BufRead, BufReader};
+    use base58::FromBase58;
 
     #[test]
     fn uncompressed_secret_key()
